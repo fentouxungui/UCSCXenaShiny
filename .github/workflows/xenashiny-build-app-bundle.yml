@@ -5,21 +5,22 @@
 # Produces, per platform:  xenashiny-<store-version>-<platform>.zip
 #   bundle/ +- manifest.json +- app/app.R +- rlib/<Pkg>/
 #
-# v2 fix (why the first release build failed with
-# "Failed to install 'unknown package' from GitHub"):
-#  * remotes::install_github() resolves each repo's package name via the GitHub
-#    API. Unauthenticated, Actions runners hit "HTTP 403 API rate limit
-#    exceeded", so remotes cannot even name the package. Fixed by exporting
-#    GITHUB_PAT = ${{ secrets.GITHUB_TOKEN }} for the install step.
-#  * slickR is on CRAN -> installed from CRAN instead of GitHub (fewer API calls).
-#  * gganatogram / ggradar are installed per-package with a gitee-mirror fallback.
+# Fix history:
+#  v3: slickR was REMOVED from CRAN (archived 2025-06-17), so it cannot come
+#      from CRAN. Install it from GitHub (yonicd/slickR), like the app's own
+#      inst/shinyapp/utils_pkgs.R does, and add its CRAN imports to the closure.
+#  v2: remotes::install_github() resolves names via the GitHub API; unauthenticated
+#      Actions runners hit "HTTP 403 API rate limit exceeded" (symptom:
+#      "Failed to install 'unknown package' from GitHub"). Fixed by exporting
+#      GITHUB_PAT = ${{ secrets.GITHUB_TOKEN }} and installing GitHub pkgs
+#      individually with a gitee-mirror fallback.
 #
 # Notes:
 #  * Upstream DESCRIPTION version (e.g. 2.2.1.9000) is DECOUPLED from the store
 #    version (the Release tag, e.g. v0.1.0): the tarball is located by glob.
 #  * The Shiny app loads most runtime packages from inst/shinyapp/utils_pkgs.R
 #    via pacman::p_load(); those are added explicitly, plus the GitHub-only
-#    packages gganatogram and ggradar.
+#    packages gganatogram, ggradar and slickR.
 #  * The dependency closure excludes only R *base*-priority packages.
 #  * app_run() returns a shinyApp object and never calls runApp().
 
@@ -119,8 +120,10 @@ jobs:
 
           # Runtime packages pulled in by inst/shinyapp/utils_pkgs.R (pacman::p_load)
           # but absent from DESCRIPTION; without these the app fails to start.
-          # slickR is on CRAN (do NOT fetch it from GitHub); ggpolypath is
-          # gganatogram's Depends and must be present too.
+          #  * slickR, gganatogram, ggradar are GitHub-only (slickR was archived
+          #    from CRAN 2025-06-17); their CRAN deps are listed here so the
+          #    closure is self-contained (ggpolypath = gganatogram's Depends;
+          #    the rest are slickR's Imports).
           extra_cran <- c(
             "purrr","tidyr","stringr","magrittr","R.utils","data.table","dplyr",
             "ggplot2","cowplot","patchwork","ggpubr","plotly","UpSetR","UCSCXenaTools",
@@ -128,9 +131,11 @@ jobs:
             "shinyFeedback","shinythemes","shinyhelper","shinycssloaders",
             "shinydashboard","shinydashboardPlus","survival","survminer","ezcox",
             "waiter","colourpicker","DT","fs","RColorBrewer","ggcorrplot","ggstatsplot",
-            "zip","msigdbr","funkyheatmap","slickR","ggpolypath","pacman","remotes"
+            "zip","msigdbr","funkyheatmap","ggpolypath",
+            "htmlwidgets","xml2","checkmate","base64enc","htmltools","lifecycle",
+            "pacman","remotes"
           )
-          github_extra <- c("jespermaag/gganatogram", "ricardo-bion/ggradar")
+          github_extra <- c("jespermaag/gganatogram", "ricardo-bion/ggradar", "yonicd/slickR")
           github_mirror <- c(
             "jespermaag/gganatogram" = "https://gitee.com/XenaShiny/gganatogram",
             "ricardo-bion/ggradar"   = "https://gitee.com/XenaShiny/ggradar"
@@ -150,7 +155,7 @@ jobs:
           }
 
           # GitHub-only runtime packages, installed INDIVIDUALLY so one failure does
-          # not abort the whole step; fall back to the gitee mirror on error.
+          # not abort the whole step; fall back to a gitee mirror when one exists.
           for (gh in github_extra) {
             ok <- tryCatch({
               remotes::install_github(gh, lib = lib, dependencies = NA,
@@ -160,11 +165,13 @@ jobs:
               cat("GitHub install failed for", gh, ":", conditionMessage(e), "\n")
               FALSE
             })
-            if (!ok) {
-              mir <- github_mirror[[gh]]
+            mir <- github_mirror[[gh]]
+            if (!ok && !is.null(mir) && nzchar(mir)) {
               cat("Falling back to mirror:", mir, "\n")
               remotes::install_git(mir, lib = lib, dependencies = NA,
                                    upgrade = "never", build_vignettes = FALSE, quiet = FALSE)
+            } else if (!ok) {
+              cat("No mirror configured for", gh, "-- will rely on the final check\n")
             }
           }
 
@@ -173,7 +180,7 @@ jobs:
           present <- basename(list.dirs(lib, recursive = FALSE))
           required <- unique(c(loc_names, setdiff(declared, base_pkgs),
                                setdiff(extra_cran, base_pkgs),
-                               "gganatogram","ggradar"))
+                               "gganatogram","ggradar","slickR"))
           missing <- setdiff(required, present)
           if (length(missing)) stop("packages missing from rlib: ", paste(missing, collapse = ", "))
           cat("rlib packages:", length(present), "\n")
@@ -199,7 +206,7 @@ jobs:
             runtime = "r-shiny", entry = "app/app.R",
             platform = "${{ matrix.platform }}",
             r_version = Sys.getenv("R_VERSION"), min_shell_version = "0.1.0",
-            notes = "Bundles the app's pacman::p_load() runtime closure; gganatogram and ggradar come from GitHub.",
+            notes = "Bundles the app's pacman::p_load() runtime closure; gganatogram, ggradar and slickR come from GitHub.",
             packages = lapply(seq_len(nrow(pkgs)), function(i) list(
               name = pkgs$Package[i], version = pkgs$Version[i],
               path = file.path("rlib", pkgs$Package[i]), source = "cran"))
