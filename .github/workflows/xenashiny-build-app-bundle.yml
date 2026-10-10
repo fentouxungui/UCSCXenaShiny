@@ -6,9 +6,10 @@
 #   bundle/ +- manifest.json +- app/app.R +- rlib/<Pkg>/
 #
 # Fix history:
-#  v3: slickR was REMOVED from CRAN (archived 2025-06-17), so it cannot come
-#      from CRAN. Install it from GitHub (yonicd/slickR), like the app's own
-#      inst/shinyapp/utils_pkgs.R does, and add its CRAN imports to the closure.
+#  v4: guarded the mirror lookup (a named-vector [[name]] throws "subscript out
+#      of bounds" when the name is absent, e.g. slickR has no mirror).
+#  v3: slickR was REMOVED from CRAN (archived 2025-06-17) -> install it from
+#      GitHub (yonicd/slickR) and add its CRAN imports to the closure.
 #  v2: remotes::install_github() resolves names via the GitHub API; unauthenticated
 #      Actions runners hit "HTTP 403 API rate limit exceeded" (symptom:
 #      "Failed to install 'unknown package' from GitHub"). Fixed by exporting
@@ -165,8 +166,8 @@ jobs:
               cat("GitHub install failed for", gh, ":", conditionMessage(e), "\n")
               FALSE
             })
-            mir <- github_mirror[[gh]]
-            if (!ok && !is.null(mir) && nzchar(mir)) {
+            mir <- if (gh %in% names(github_mirror)) github_mirror[[gh]] else NA_character_
+            if (!ok && !is.na(mir) && nzchar(mir)) {
               cat("Falling back to mirror:", mir, "\n")
               remotes::install_git(mir, lib = lib, dependencies = NA,
                                    upgrade = "never", build_vignettes = FALSE, quiet = FALSE)
